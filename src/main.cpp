@@ -14,8 +14,10 @@ static const int SCREEN_H = 240;
 // 20 columns x 28 depth rows of world-space quads rendered as wireframe.
 // The grid is much wider than the screen so perspective convergence fills
 // the full width at the far end.
-static const int   GRID_W   = 20;       // number of columns
-static const int   GRID_D   = 28;       // number of depth rows
+static const int   GRID_W_MAX = 30;     // compile-time max columns
+static const int   GRID_D_MAX = 40;     // compile-time max depth rows
+static int         gridW = 20;          // active columns
+static int         gridD = 28;          // active depth rows
 static const float CELL_X   = 100.0f;  // world-units per column
 static const float NEAR_Z   = 42.0f;   // world-Z of first row ahead of camera
 static const float CELL_Z   = 48.0f;   // world-units per row
@@ -32,8 +34,9 @@ static const float FLY_SPEED = 4.5f;   // world-units advanced per frame
 static float       cameraZ   = 0.0f;
 
 // ── Purple sky shot ─────────────────────────────────────────────────────────
-static const int      MAX_SKY_SHOTS    = 5;
-static const uint32_t SHOT_INTERVAL_MS = 220;
+static const int      MAX_SKY_SHOTS_CAP = 12;
+static int            activeSkyShots    = 5;
+static uint32_t       shotIntervalMs    = 220;
 static const float    SHOT_START_REL_Z = 1300.0f;
 static const float    SHOT_END_REL_Z   = -160.0f;
 static const float    SHOT_SPEED       = 1.9f;     // world-units per ms
@@ -51,12 +54,12 @@ struct SkyShot {
     float nearY;
 };
 
-static SkyShot skyShots[MAX_SKY_SHOTS];
+static SkyShot skyShots[MAX_SKY_SHOTS_CAP];
 
 // ── Vertex cache (avoids re-projecting shared grid corners) ───────────────────
-static int16_t vsx   [GRID_D + 1][GRID_W + 1];
-static int16_t vsy   [GRID_D + 1][GRID_W + 1];
-static bool    vvalid[GRID_D + 1][GRID_W + 1];
+static int16_t vsx   [GRID_D_MAX + 1][GRID_W_MAX + 1];
+static int16_t vsy   [GRID_D_MAX + 1][GRID_W_MAX + 1];
+static bool    vvalid[GRID_D_MAX + 1][GRID_W_MAX + 1];
 
 // ── Noise / terrain height ────────────────────────────────────────────────────
 // Deterministic integer hash -> pseudo-random float in [0, 1).
@@ -133,8 +136,11 @@ static float randRange(float minValue, float maxValue)
 
 static void spawnSkyShot(uint32_t nowMs)
 {
+    if (activeSkyShots < 1)
+        return;
+
     SkyShot &shot = skyShots[nextShotSlot];
-    nextShotSlot = (nextShotSlot + 1) % MAX_SKY_SHOTS;
+    nextShotSlot = (nextShotSlot + 1) % activeSkyShots;
 
     shot.active = true;
     shot.launchMs = nowMs;
@@ -207,6 +213,28 @@ static void drawSkyShot(SkyShot &shot, uint32_t nowMs)
 void setup()
 {
     Serial.begin(115200);
+
+    uint32_t psramSize = ESP.getPsramSize();
+    Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
+    Serial.printf("PSRAM size: %u bytes\n", psramSize);
+    Serial.printf("Free PSRAM: %u bytes\n", ESP.getFreePsram());
+
+    if (psramSize >= 4UL * 1024UL * 1024UL) {
+        // High quality preset for 4MB+ PSRAM boards.
+        gridW = 30;
+        gridD = 40;
+        activeSkyShots = 10;
+        shotIntervalMs = 140;
+    } else {
+        // Safe defaults for no/low PSRAM boards.
+        gridW = 20;
+        gridD = 28;
+        activeSkyShots = 5;
+        shotIntervalMs = 220;
+    }
+    nextShotSlot = 0;
+    Serial.printf("Quality profile: grid=%dx%d, shots=%d, interval=%ums\n", gridW, gridD, activeSkyShots, shotIntervalMs);
+
     randomSeed((uint32_t)micros());
     DisplayController.begin();
     DisplayController.setResolution(QVGA_320x240_60Hz, -1, -1, true);
@@ -223,7 +251,7 @@ void loop()
     canvas->setBrushColor(fabgl::Color::Black);
     canvas->clear();
 
-    if ((uint32_t)(nowMs - lastShotSpawnMs) >= SHOT_INTERVAL_MS) {
+    if ((uint32_t)(nowMs - lastShotSpawnMs) >= shotIntervalMs) {
         lastShotSpawnMs = nowMs;
         spawnSkyShot(nowMs);
     }
@@ -231,20 +259,20 @@ void loop()
     canvas->beginUpdate();
 
     // World-space origin of the visible grid patch
-    float ox = -(GRID_W * 0.5f) * CELL_X;   // leftmost column X
+    float ox = -(gridW * 0.5f) * CELL_X;   // leftmost column X
     float oz =  cameraZ + NEAR_Z;            // nearest row Z
 
     // ── Project all vertices using precomputed 1/Z per row ────────────────────
-    for (int zi = 0; zi <= GRID_D; zi++) {
+    for (int zi = 0; zi <= gridD; zi++) {
         float wz = oz + zi * CELL_Z;
         float cz = wz - cameraZ;
         if (cz < 0.5f) {
-            for (int xi = 0; xi <= GRID_W; xi++)
+            for (int xi = 0; xi <= gridW; xi++)
                 vvalid[zi][xi] = false;
             continue;
         }
         float invZ = FOCAL / cz;
-        for (int xi = 0; xi <= GRID_W; xi++) {
+        for (int xi = 0; xi <= gridW; xi++) {
             float wx = ox + xi * CELL_X;
             float wy = terrainY(wx, wz);
             int px, py;
@@ -256,12 +284,12 @@ void loop()
     }
 
     // ── Draw terrain in one merged pass (horizontal + depth lines per row) ────
-    for (int zi = 0; zi <= GRID_D; zi++) {
-        uint8_t g = (uint8_t)(255 - (zi * 180) / GRID_D);
+    for (int zi = 0; zi <= gridD; zi++) {
+        uint8_t g = (uint8_t)(255 - (zi * 180) / (gridD > 0 ? gridD : 1));
         canvas->setPenColor(fabgl::RGB888(0, g, 0));
 
         // Horizontal lines for this row
-        for (int xi = 0; xi < GRID_W; xi++) {
+        for (int xi = 0; xi < gridW; xi++) {
             if (vvalid[zi][xi] && vvalid[zi][xi + 1]) {
                 int x0 = vsx[zi][xi], y0 = vsy[zi][xi];
                 int x1 = vsx[zi][xi+1], y1 = vsy[zi][xi+1];
@@ -271,8 +299,8 @@ void loop()
         }
 
         // Depth lines from this row to the next
-        if (zi < GRID_D) {
-            for (int xi = 0; xi <= GRID_W; xi++) {
+        if (zi < gridD) {
+            for (int xi = 0; xi <= gridW; xi++) {
                 if (vvalid[zi][xi] && vvalid[zi + 1][xi]) {
                     int x0 = vsx[zi][xi], y0 = vsy[zi][xi];
                     int x1 = vsx[zi+1][xi], y1 = vsy[zi+1][xi];
@@ -283,7 +311,7 @@ void loop()
         }
     }
 
-    for (int i = 0; i < MAX_SKY_SHOTS; ++i) {
+    for (int i = 0; i < activeSkyShots; ++i) {
         drawSkyShot(skyShots[i], nowMs);
     }
 
