@@ -98,7 +98,7 @@ static float terrainY(float wx, float wz)
 // ── Perspective projection ─────────────────────────────────────────────────────
 // Projects world point (wx, wy, wz) into screen (sx, sy).
 // Returns false if the point is at or behind the camera.
-static bool project(float wx, float wy, float wz, int &sx, int &sy)
+static inline bool project(float wx, float wy, float wz, int &sx, int &sy)
 {
     float cz = wz - cameraZ;
     if (cz < 0.5f) return false;
@@ -106,6 +106,23 @@ static bool project(float wx, float wy, float wz, int &sx, int &sy)
     sx = (int)( wx           * inv) + SCREEN_W / 2;
     sy = (int)(-(wy - CAM_H) * inv) + HORIZON_Y;
     return true;
+}
+
+// Fast project using precomputed 1/Z for an entire row.
+static inline void projectRow(float wx, float wy, float invZ, int &sx, int &sy)
+{
+    sx = (int)(wx * invZ) + SCREEN_W / 2;
+    sy = (int)(-(wy - CAM_H) * invZ) + HORIZON_Y;
+}
+
+// Returns true if a line between two screen points is entirely off-screen.
+static inline bool lineOffScreen(int x0, int y0, int x1, int y1)
+{
+    if (x0 < 0 && x1 < 0) return true;
+    if (x0 >= SCREEN_W && x1 >= SCREEN_W) return true;
+    if (y0 < 0 && y1 < 0) return true;
+    if (y0 >= SCREEN_H && y1 >= SCREEN_H) return true;
+    return false;
 }
 
 static float randRange(float minValue, float maxValue)
@@ -158,7 +175,7 @@ static void drawSkyShot(SkyShot &shot, uint32_t nowMs)
 
     // Draw only visible portions so the streak still appears when one endpoint
     // is out of view or behind the near plane.
-    static const int SEGMENTS = 10;
+    static const int SEGMENTS = 4;
     int prevSX = 0;
     int prevSY = 0;
     bool prevValid = false;
@@ -211,48 +228,57 @@ void loop()
         spawnSkyShot(nowMs);
     }
 
+    canvas->beginUpdate();
+
     // World-space origin of the visible grid patch
     float ox = -(GRID_W * 0.5f) * CELL_X;   // leftmost column X
     float oz =  cameraZ + NEAR_Z;            // nearest row Z
 
-    // ── Project all (GRID_W+1) x (GRID_D+1) vertices ─────────────────────────
-    for (int zi = 0; zi <= GRID_D; zi++) 
-    {
+    // ── Project all vertices using precomputed 1/Z per row ────────────────────
+    for (int zi = 0; zi <= GRID_D; zi++) {
         float wz = oz + zi * CELL_Z;
-        for (int xi = 0; xi <= GRID_W; xi++) 
-        {
+        float cz = wz - cameraZ;
+        if (cz < 0.5f) {
+            for (int xi = 0; xi <= GRID_W; xi++)
+                vvalid[zi][xi] = false;
+            continue;
+        }
+        float invZ = FOCAL / cz;
+        for (int xi = 0; xi <= GRID_W; xi++) {
             float wx = ox + xi * CELL_X;
             float wy = terrainY(wx, wz);
             int px, py;
-            bool ok    = project(wx, wy, wz, px, py);
+            projectRow(wx, wy, invZ, px, py);
             vsx   [zi][xi] = (int16_t)px;
             vsy   [zi][xi] = (int16_t)py;
-            vvalid[zi][xi] = ok;
+            vvalid[zi][xi] = true;
         }
     }
 
-    // ── Draw horizontal (X-axis) grid lines ───────────────────────────────────
+    // ── Draw terrain in one merged pass (horizontal + depth lines per row) ────
     for (int zi = 0; zi <= GRID_D; zi++) {
-        // Near rows are brighter; far rows are darker.
         uint8_t g = (uint8_t)(255 - (zi * 180) / GRID_D);
         canvas->setPenColor(fabgl::RGB888(0, g, 0));
+
+        // Horizontal lines for this row
         for (int xi = 0; xi < GRID_W; xi++) {
             if (vvalid[zi][xi] && vvalid[zi][xi + 1]) {
-                canvas->drawLine(vsx[zi][xi], vsy[zi][xi],
-                                 vsx[zi][xi + 1], vsy[zi][xi + 1]);
+                int x0 = vsx[zi][xi], y0 = vsy[zi][xi];
+                int x1 = vsx[zi][xi+1], y1 = vsy[zi][xi+1];
+                if (!lineOffScreen(x0, y0, x1, y1))
+                    canvas->drawLine(x0, y0, x1, y1);
             }
         }
-    }
 
-    // ── Draw depth (Z-axis) grid lines ────────────────────────────────────────
-    for (int zi = 0; zi < GRID_D; zi++) 
-    {
-        uint8_t g = (uint8_t)(255 - (zi * 180) / GRID_D);
-        canvas->setPenColor(fabgl::RGB888(0, g, 0));
-        for (int xi = 0; xi <= GRID_W; xi++) {
-            if (vvalid[zi][xi] && vvalid[zi + 1][xi]) {
-                canvas->drawLine(vsx[zi][xi],     vsy[zi][xi],
-                                 vsx[zi + 1][xi], vsy[zi + 1][xi]);
+        // Depth lines from this row to the next
+        if (zi < GRID_D) {
+            for (int xi = 0; xi <= GRID_W; xi++) {
+                if (vvalid[zi][xi] && vvalid[zi + 1][xi]) {
+                    int x0 = vsx[zi][xi], y0 = vsy[zi][xi];
+                    int x1 = vsx[zi+1][xi], y1 = vsy[zi+1][xi];
+                    if (!lineOffScreen(x0, y0, x1, y1))
+                        canvas->drawLine(x0, y0, x1, y1);
+                }
             }
         }
     }
@@ -260,6 +286,8 @@ void loop()
     for (int i = 0; i < MAX_SKY_SHOTS; ++i) {
         drawSkyShot(skyShots[i], nowMs);
     }
+
+    canvas->endUpdate();
 
     if (useDoubleBuffer) {
         // In double-buffer mode draw as fast as possible, then swap on VSync.
