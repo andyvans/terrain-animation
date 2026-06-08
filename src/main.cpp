@@ -28,8 +28,30 @@ static const float FOCAL     = 200.0f; // perspective focal length (px)
 static const int   HORIZON_Y = 75;     // screen-row of horizon
 
 // ── Flight ────────────────────────────────────────────────────────────────────
-static const float FLY_SPEED = 5.0f;   // world-units advanced per frame
+static const float FLY_SPEED = 4.5f;   // world-units advanced per frame
 static float       cameraZ   = 0.0f;
+
+// ── Purple sky shot ─────────────────────────────────────────────────────────
+static const int      MAX_SKY_SHOTS    = 5;
+static const uint32_t SHOT_INTERVAL_MS = 220;
+static const float    SHOT_START_REL_Z = 1300.0f;
+static const float    SHOT_END_REL_Z   = -160.0f;
+static const float    SHOT_SPEED       = 1.9f;     // world-units per ms
+static const float    SHOT_LENGTH      = 240.0f;   // world-units
+
+static uint32_t lastShotSpawnMs = 0;
+static int      nextShotSlot    = 0;
+
+struct SkyShot {
+    bool active;
+    uint32_t launchMs;
+    float farX;
+    float farY;
+    float nearX;
+    float nearY;
+};
+
+static SkyShot skyShots[MAX_SKY_SHOTS];
 
 // ── Vertex cache (avoids re-projecting shared grid corners) ───────────────────
 static int16_t vsx   [GRID_D + 1][GRID_W + 1];
@@ -86,10 +108,89 @@ static bool project(float wx, float wy, float wz, int &sx, int &sy)
     return true;
 }
 
+static float randRange(float minValue, float maxValue)
+{
+    long r = random(0, 10000);
+    return minValue + ((float)r / 9999.0f) * (maxValue - minValue);
+}
+
+static void spawnSkyShot(uint32_t nowMs)
+{
+    SkyShot &shot = skyShots[nextShotSlot];
+    nextShotSlot = (nextShotSlot + 1) % MAX_SKY_SHOTS;
+
+    shot.active = true;
+    shot.launchMs = nowMs;
+
+    // Start very far away in the sky, then pass near/past the camera at a random point.
+    shot.farX  = randRange(-1200.0f, 1200.0f);
+    shot.farY  = CAM_H + randRange(70.0f, 180.0f);
+    shot.nearX = randRange(-500.0f, 500.0f);
+    shot.nearY = CAM_H + randRange(10.0f, 85.0f);
+}
+
+static void drawSkyShot(SkyShot &shot, uint32_t nowMs)
+{
+    if (!shot.active)
+        return;
+
+    float ageMs = (float)(nowMs - shot.launchMs);
+    float headRelZ = SHOT_START_REL_Z - ageMs * SHOT_SPEED;
+    if (headRelZ < SHOT_END_REL_Z) {
+        shot.active = false;
+        return;
+    }
+
+    float denom = SHOT_START_REL_Z - SHOT_END_REL_Z;
+    float headT = (SHOT_START_REL_Z - headRelZ) / denom;
+    if (headT < 0.0f) headT = 0.0f;
+    if (headT > 1.0f) headT = 1.0f;
+
+    float tailRelZ = headRelZ + SHOT_LENGTH;
+    float tailT = (SHOT_START_REL_Z - tailRelZ) / denom;
+    if (tailT < 0.0f) tailT = 0.0f;
+    if (tailT > 1.0f) tailT = 1.0f;
+
+    float headX = shot.farX + (shot.nearX - shot.farX) * headT;
+    float headY = shot.farY + (shot.nearY - shot.farY) * headT;
+    float tailX = shot.farX + (shot.nearX - shot.farX) * tailT;
+    float tailY = shot.farY + (shot.nearY - shot.farY) * tailT;
+
+    // Draw only visible portions so the streak still appears when one endpoint
+    // is out of view or behind the near plane.
+    static const int SEGMENTS = 10;
+    int prevSX = 0;
+    int prevSY = 0;
+    bool prevValid = false;
+
+    canvas->setPenColor(fabgl::RGB888(220, 70, 255));
+    for (int i = 0; i <= SEGMENTS; ++i) {
+        float t = (float)i / (float)SEGMENTS;
+        float relZ = tailRelZ + (headRelZ - tailRelZ) * t;
+        float pT = (SHOT_START_REL_Z - relZ) / denom;
+        if (pT < 0.0f) pT = 0.0f;
+        if (pT > 1.0f) pT = 1.0f;
+
+        float px = shot.farX + (shot.nearX - shot.farX) * pT;
+        float py = shot.farY + (shot.nearY - shot.farY) * pT;
+        int sx, sy;
+        bool valid = project(px, py, cameraZ + relZ, sx, sy);
+
+        if (valid && prevValid) {
+            canvas->drawLine(prevSX, prevSY, sx, sy);
+        }
+
+        prevSX = sx;
+        prevSY = sy;
+        prevValid = valid;
+    }
+}
+
 // ── Arduino entry points ──────────────────────────────────────────────────────
 void setup()
 {
     Serial.begin(115200);
+    randomSeed((uint32_t)micros());
     DisplayController.begin();
     DisplayController.setResolution(QVGA_320x240_60Hz, -1, -1, true);
     useDoubleBuffer = DisplayController.isDoubleBufferedEnabled();
@@ -99,17 +200,27 @@ void setup()
 
 void loop()
 {
+    uint32_t nowMs = millis();
+
     // ── Clear to black ────────────────────────────────────────────────────────
     canvas->setBrushColor(fabgl::Color::Black);
     canvas->clear();
+
+    if ((uint32_t)(nowMs - lastShotSpawnMs) >= SHOT_INTERVAL_MS) {
+        lastShotSpawnMs = nowMs;
+        spawnSkyShot(nowMs);
+    }
+
     // World-space origin of the visible grid patch
     float ox = -(GRID_W * 0.5f) * CELL_X;   // leftmost column X
     float oz =  cameraZ + NEAR_Z;            // nearest row Z
 
     // ── Project all (GRID_W+1) x (GRID_D+1) vertices ─────────────────────────
-    for (int zi = 0; zi <= GRID_D; zi++) {
+    for (int zi = 0; zi <= GRID_D; zi++) 
+    {
         float wz = oz + zi * CELL_Z;
-        for (int xi = 0; xi <= GRID_W; xi++) {
+        for (int xi = 0; xi <= GRID_W; xi++) 
+        {
             float wx = ox + xi * CELL_X;
             float wy = terrainY(wx, wz);
             int px, py;
@@ -134,7 +245,8 @@ void loop()
     }
 
     // ── Draw depth (Z-axis) grid lines ────────────────────────────────────────
-    for (int zi = 0; zi < GRID_D; zi++) {
+    for (int zi = 0; zi < GRID_D; zi++) 
+    {
         uint8_t g = (uint8_t)(255 - (zi * 180) / GRID_D);
         canvas->setPenColor(fabgl::RGB888(0, g, 0));
         for (int xi = 0; xi <= GRID_W; xi++) {
@@ -143,6 +255,10 @@ void loop()
                                  vsx[zi + 1][xi], vsy[zi + 1][xi]);
             }
         }
+    }
+
+    for (int i = 0; i < MAX_SKY_SHOTS; ++i) {
+        drawSkyShot(skyShots[i], nowMs);
     }
 
     if (useDoubleBuffer) {
