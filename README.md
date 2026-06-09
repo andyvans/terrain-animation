@@ -5,3 +5,5 @@ Procedural VGA animation for LILYGO® TTGO VGA VGA32 Module V1.4 ESP32 using Fab
 - Depth-based terrain shading
 - Multiple purple sky shots (up to 5 active)
 - Double-buffered rendering when memory allows
+
+<img src="media/terrain-animation.gif">

@@ -130,12 +130,14 @@ static inline bool lineOffScreen(int x0, int y0, int x1, int y1)
 
 static float randRange(float minValue, float maxValue)
 {
+    // Use Arduino's integer RNG and remap to a float range.
     long r = random(0, 10000);
     return minValue + ((float)r / 9999.0f) * (maxValue - minValue);
 }
 
 static void spawnSkyShot(uint32_t nowMs)
 {
+    // Ring-buffer allocation: recycle old slots instead of allocating/freeing.
     if (activeSkyShots < 1)
         return;
 
@@ -157,6 +159,7 @@ static void drawSkyShot(SkyShot &shot, uint32_t nowMs)
     if (!shot.active)
         return;
 
+    // Move the shot head toward the camera in camera-relative Z space.
     float ageMs = (float)(nowMs - shot.launchMs);
     float headRelZ = SHOT_START_REL_Z - ageMs * SHOT_SPEED;
     if (headRelZ < SHOT_END_REL_Z) {
@@ -174,6 +177,7 @@ static void drawSkyShot(SkyShot &shot, uint32_t nowMs)
     if (tailT < 0.0f) tailT = 0.0f;
     if (tailT > 1.0f) tailT = 1.0f;
 
+    // Interpolate both endpoints from far target to near fly-by target.
     float headX = shot.farX + (shot.nearX - shot.farX) * headT;
     float headY = shot.farY + (shot.nearY - shot.farY) * headT;
     float tailX = shot.farX + (shot.nearX - shot.farX) * tailT;
@@ -219,6 +223,8 @@ void setup()
     Serial.printf("PSRAM size: %u bytes\n", psramSize);
     Serial.printf("Free PSRAM: %u bytes\n", ESP.getFreePsram());
 
+    // Pick a quality profile based on available PSRAM to avoid overcommitting
+    // memory on smaller boards.
     if (psramSize >= 4UL * 1024UL * 1024UL) {
         // High quality preset for 4MB+ PSRAM boards.
         gridW = 30;
@@ -236,6 +242,7 @@ void setup()
     Serial.printf("Quality profile: grid=%dx%d, shots=%d, interval=%ums\n", gridW, gridD, activeSkyShots, shotIntervalMs);
 
     randomSeed((uint32_t)micros());
+    // Initialize VGA output and discover whether double buffering is available.
     DisplayController.begin();
     DisplayController.setResolution(QVGA_320x240_60Hz, -1, -1, true);
     useDoubleBuffer = DisplayController.isDoubleBufferedEnabled();
@@ -251,11 +258,13 @@ void loop()
     canvas->setBrushColor(fabgl::Color::Black);
     canvas->clear();
 
+    // Spawn at a fixed cadence, independent of frame rate jitter.
     if ((uint32_t)(nowMs - lastShotSpawnMs) >= shotIntervalMs) {
         lastShotSpawnMs = nowMs;
         spawnSkyShot(nowMs);
     }
 
+    // Batch drawing operations between begin/end for better throughput.
     canvas->beginUpdate();
 
     // World-space origin of the visible grid patch
@@ -285,6 +294,7 @@ void loop()
 
     // ── Draw terrain in one merged pass (horizontal + depth lines per row) ────
     for (int zi = 0; zi <= gridD; zi++) {
+        // Fade distant rows darker to reinforce depth.
         uint8_t g = (uint8_t)(255 - (zi * 180) / (gridD > 0 ? gridD : 1));
         canvas->setPenColor(fabgl::RGB888(0, g, 0));
 
@@ -312,6 +322,7 @@ void loop()
     }
 
     for (int i = 0; i < activeSkyShots; ++i) {
+        // Update + draw each active sky streak this frame.
         drawSkyShot(skyShots[i], nowMs);
     }
 
