@@ -6,4 +6,4 @@ Procedural VGA animation for LILYGO® TTGO VGA VGA32 Module V1.4 ESP32 using Fab
 - Multiple purple sky shots (up to 5 active)
 - Double-buffered rendering when memory allows
 
-<video src="media/terrain-animation.webm" controls></video>
+<img src="media/terrain-animation.gif">
