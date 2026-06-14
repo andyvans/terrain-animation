@@ -20,8 +20,18 @@ void GifPlayer::drawCallback(GIFDRAW *pDraw)
     if (destY >= self->gifHeight) return;
 
     uint8_t *src = pDraw->pPixels;
-    uint8_t *pal = pDraw->pPalette24; // RGB888 entries when GIF_PALETTE_RGB888
+    uint16_t *pal = pDraw->pPalette;  // RGB565 entries (native format — avoids RGB888 conversion bugs)
     uint8_t *dst = self->frameBuffer + (destY * self->gifWidth + pDraw->iX) * 4;
+
+    // Disposal method 2: restore transparent pixels to the GIF background colour
+    // before rendering — prevents old frame content bleeding through on palette change.
+    if (pDraw->ucDisposalMethod == 2 && pDraw->ucHasTransparency) {
+        for (int x = 0; x < pDraw->iWidth; x++) {
+            if (src[x] == pDraw->ucTransparent)
+                src[x] = pDraw->ucBackground;
+        }
+        pDraw->ucHasTransparency = 0;
+    }
 
     for (int x = 0; x < pDraw->iWidth && (pDraw->iX + x) < self->gifWidth; x++) {
         uint8_t idx = src[x];
@@ -29,17 +39,26 @@ void GifPlayer::drawCallback(GIFDRAW *pDraw)
             dst += 4;
             continue;
         }
-        uint8_t *c = &pal[idx * 3];
-        *dst++ = c[0]; // R
-        *dst++ = c[1]; // G
-        *dst++ = c[2]; // B
-        *dst++ = 255;  // A
+        // RGB565 → RGBA8888: expand 5/6/5 bits to 8 bits each
+        uint16_t rgb = pal[idx];
+        uint8_t r = (rgb >> 11) & 0x1F; r = (r << 3) | (r >> 2);
+        uint8_t g = (rgb >> 5)  & 0x3F; g = (g << 2) | (g >> 4);
+        uint8_t b =  rgb        & 0x1F; b = (b << 3) | (b >> 2);
+        *dst++ = r;
+        *dst++ = g;
+        *dst++ = b;
+        *dst++ = 255; // A
     }
 }
 
 void GifPlayer::openFromBuffer()
 {
-    gif->begin(GIF_PALETTE_RGB888);
+    // Clear to opaque black so frame 1 always composites against a known state
+    if (frameBuffer && gifWidth > 0 && gifHeight > 0) {
+        uint32_t *p32 = (uint32_t *)frameBuffer;
+        for (int i = 0; i < gifWidth * gifHeight; i++) p32[i] = 0xFF000000;
+    }
+    gif->begin(GIF_PALETTE_RGB565_LE);
     gif->open(fileBuffer, (int)fileSize, drawCallback);
 }
 
@@ -87,7 +106,10 @@ bool GifPlayer::begin(const char *filePath, uint32_t duration)
         free(fileBuffer); fileBuffer = nullptr;
         return false;
     }
-    memset(frameBuffer, 0, bufSize);
+    // Initialise to opaque black — transparent/unwritten pixels must not
+    // bleed through to old canvas content from the previous GIF.
+    uint32_t *p32 = (uint32_t *)frameBuffer;
+    for (int i = 0; i < gifWidth * gifHeight; i++) p32[i] = 0xFF000000; // RGBA: R=0,G=0,B=0,A=255
 
     frameBitmap = new fabgl::Bitmap(gifWidth, gifHeight, frameBuffer, fabgl::PixelFormat::RGBA8888, false);
 
@@ -122,7 +144,7 @@ void GifPlayer::tick()
     nextFrameMs = now + max(frameDelay, 16);
 
     if (result == 0) {
-        // Last frame -- restart from in-RAM buffer
+        // Last frame — restart from in-RAM buffer
         gif->close();
         openFromBuffer();
     }
