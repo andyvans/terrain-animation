@@ -7,8 +7,8 @@
 #include <string>
 
 #define SDCARD_MOUNT_PATH   "/sdcard"
-#define GIF_DURATION_MS     15000
-#define TERRAIN_DURATION_MS 15000
+#define GIF_DURATION_MS     30000
+#define TERRAIN_DURATION_MS 30000
 
 enum AppState { STATE_GIF, STATE_TERRAIN };
 
@@ -81,7 +81,7 @@ void setup()
     Serial.printf("Chip package: %s\n", pkgName);
 
     // Mount SD card — reduce speed to 400 kHz for reliable init
-    FileBrowser::setSDCardMaxFreqKHz(400);
+    FileBrowser::setSDCardMaxFreqKHz(300);
     if (!FileBrowser::mountSDCard(false, SDCARD_MOUNT_PATH)) {
         Serial.println("SD mount failed — check wiring");
     } else {
