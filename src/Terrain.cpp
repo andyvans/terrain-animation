@@ -18,7 +18,6 @@ struct Terrain::SkyShot {
 class Terrain::Impl {
 public:
     // Display
-    fabgl::VGAController displayController;
     fabgl::Canvas *canvas = nullptr;
     bool useDoubleBuffer = false;
 
@@ -321,15 +320,6 @@ void Terrain::begin()
 
     // Seed RNG for sky-shot spawn variation and endpoint placement.
     randomSeed((uint32_t)micros());
-    impl->displayController.begin();
-    impl->displayController.setResolution(QVGA_320x240_60Hz, -1, -1, true);
-    impl->useDoubleBuffer = impl->displayController.isDoubleBufferedEnabled();
-    Serial.printf("Double buffering: %s\n", impl->useDoubleBuffer ? "enabled" : "disabled");
-
-    if (impl->canvas == nullptr) {
-        // Canvas wraps display controller drawing primitives.
-        impl->canvas = new fabgl::Canvas(&impl->displayController);
-    }
 }
 
 void Terrain::run()
@@ -370,3 +360,29 @@ void Terrain::run()
     // Advance forward through the procedural terrain field.
     impl->cameraZ += Impl::FLY_SPEED;
 }
+
+fabgl::Canvas *Terrain::getCanvas() const
+{
+    if (impl == nullptr) {
+        return nullptr;
+    }
+    return impl->canvas;
+}
+
+void Terrain::setCanvas(fabgl::Canvas *displayCanvas)
+{
+    if (impl == nullptr) {
+        impl = new Impl();
+    }
+    impl->canvas = displayCanvas;
+}
+
+void Terrain::setDoubleBuffered(bool doubleBuffered)
+{
+    if (impl == nullptr) {
+        impl = new Impl();
+    }
+    impl->useDoubleBuffer = doubleBuffered;
+}
+
+

@@ -2,10 +2,23 @@
 
 #include <stdint.h>
 
+namespace fabgl {
+    class Canvas;
+}
+
 class Terrain {
 public:
     void begin();
     void run();
+    
+    // Set the display canvas (must be called before run())
+    void setCanvas(fabgl::Canvas *displayCanvas);
+
+    // Inform Terrain whether the display is double-buffered (set after canvas is created)
+    void setDoubleBuffered(bool doubleBuffered);
+
+    // Get the display canvas for other components
+    fabgl::Canvas *getCanvas() const;
 
 private:
     struct SkyShot;
