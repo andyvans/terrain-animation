@@ -81,7 +81,13 @@ bool GifPlayer::begin(const char *filePath, uint32_t duration)
     fseek(f, 0, SEEK_END);
     fileSize = (size_t)ftell(f);
     fseek(f, 0, SEEK_SET);
-    fileBuffer = (uint8_t *)ps_malloc(fileSize);
+
+    // Reuse file buffer if large enough, otherwise reallocate
+    if (!fileBuffer || fileBufferCapacity < fileSize) {
+        if (fileBuffer) free(fileBuffer);
+        fileBuffer = (uint8_t *)ps_malloc(fileSize);
+        fileBufferCapacity = fileBuffer ? fileSize : 0;
+    }
     if (!fileBuffer) {
         Serial.printf("GifPlayer: not enough PSRAM for file (%u bytes)\n", fileSize);
         fclose(f);
@@ -90,27 +96,32 @@ bool GifPlayer::begin(const char *filePath, uint32_t duration)
     fread(fileBuffer, 1, fileSize, f);
     fclose(f);
 
-    gif = new AnimatedGIF();
+    // Reuse AnimatedGIF object
+    if (!gif) gif = new AnimatedGIF();
     openFromBuffer();
 
     gifWidth  = gif->getCanvasWidth();
     gifHeight = gif->getCanvasHeight();
     Serial.printf("GifPlayer: loaded %s  %dx%d  (%u bytes)\n", filePath, gifWidth, gifHeight, fileSize);
 
+    // Reuse frame buffer if same dimensions
     int bufSize = gifWidth * gifHeight * 4;
-    frameBuffer = (uint8_t *)ps_malloc(bufSize);
+    if (!frameBuffer || frameBufferCapacity < bufSize) {
+        if (frameBuffer) free(frameBuffer);
+        frameBuffer = (uint8_t *)ps_malloc(bufSize);
+        frameBufferCapacity = frameBuffer ? bufSize : 0;
+    }
     if (!frameBuffer) {
         Serial.printf("GifPlayer: not enough PSRAM for frame buffer (%d bytes)\n", bufSize);
         gif->close();
-        delete gif; gif = nullptr;
-        free(fileBuffer); fileBuffer = nullptr;
         return false;
     }
-    // Initialise to opaque black — transparent/unwritten pixels must not
-    // bleed through to old canvas content from the previous GIF.
+    // Initialise to opaque black
     uint32_t *p32 = (uint32_t *)frameBuffer;
-    for (int i = 0; i < gifWidth * gifHeight; i++) p32[i] = 0xFF000000; // RGBA: R=0,G=0,B=0,A=255
+    for (int i = 0; i < gifWidth * gifHeight; i++) p32[i] = 0xFF000000;
 
+    // Reuse or recreate bitmap if dimensions changed
+    if (frameBitmap) delete frameBitmap;
     frameBitmap = new fabgl::Bitmap(gifWidth, gifHeight, frameBuffer, fabgl::PixelFormat::RGBA8888, false);
 
     startTimeMs = millis();
@@ -155,22 +166,13 @@ void GifPlayer::stop()
     active = false;
     if (gif) {
         gif->close();
-        delete gif;
-        gif = nullptr;
+        // Keep gif object for reuse — don't delete
     }
     if (frameBitmap) {
         delete frameBitmap;
         frameBitmap = nullptr;
     }
-    if (frameBuffer) {
-        free(frameBuffer);
-        frameBuffer = nullptr;
-    }
-    if (fileBuffer) {
-        free(fileBuffer);
-        fileBuffer = nullptr;
-        fileSize = 0;
-    }
+    // Keep frameBuffer and fileBuffer allocated for reuse
 }
 
 bool GifPlayer::isActive() const

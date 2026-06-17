@@ -80,10 +80,16 @@ void setup()
     }
     Serial.printf("Chip package: %s\n", pkgName);
 
-    // Mount SD card — reduce speed to 400 kHz for reliable init
-    FileBrowser::setSDCardMaxFreqKHz(300);
+    // Mount SD card — 20 MHz SPI for fast reads
+    FileBrowser::setSDCardMaxFreqKHz(20000);
     if (!FileBrowser::mountSDCard(false, SDCARD_MOUNT_PATH)) {
-        Serial.println("SD mount failed — check wiring");
+        // Retry at lower speed if fast init fails
+        FileBrowser::setSDCardMaxFreqKHz(400);
+        if (!FileBrowser::mountSDCard(false, SDCARD_MOUNT_PATH)) {
+            Serial.println("SD mount failed — check wiring");
+        } else {
+            Serial.println("SD mounted OK (slow mode)");
+        }
     } else {
         Serial.println("SD mounted OK");
     }

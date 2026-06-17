@@ -34,9 +34,11 @@ private:
     fabgl::Canvas  *canvas      = nullptr;
     fabgl::Bitmap  *frameBitmap = nullptr;
     uint8_t        *frameBuffer = nullptr;  // RGBA8888 pixels in PSRAM
+    size_t          frameBufferCapacity = 0;
     uint8_t        *fileBuffer  = nullptr;  // full GIF file in PSRAM
+    size_t          fileBufferCapacity  = 0;
     size_t          fileSize    = 0;
-    AnimatedGIF    *gif         = nullptr;  // heap-allocated decoder
+    AnimatedGIF    *gif         = nullptr;  // heap-allocated decoder (reused)
     uint32_t        startTimeMs = 0;
     uint32_t        durationMs  = 0;
     uint32_t        nextFrameMs = 0;
